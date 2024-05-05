@@ -738,7 +738,7 @@ ALLOW_EMAIL_LOGIN=true
 ALLOW_REGISTRATION=true
 ALLOW_SOCIAL_LOGIN=false
 ALLOW_SOCIAL_REGISTRATION=false
-ALLOW_PASSWORD_RESET=true
+ALLOW_PASSWORD_RESET=false
 ```
 
 - Default values: session expiry: 15 minutes, refresh token expiry: 7 days
