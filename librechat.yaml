@@ -1,0 +1,290 @@
+version: 1.0.5
+cache: true
+# fileStrategy: "firebase"  # If using Firebase CDN
+fileConfig:
+  endpoints:
+    assistants:
+      fileLimit: 5
+      # Maximum size for an individual file in MB
+      fileSizeLimit: 10
+      # Maximum total size for all files in a single request in MB
+      totalSizeLimit: 50 
+      # In case you wish to limit certain filetypes
+      # supportedMimeTypes: 
+      #   - "image/.*"
+      #   - "application/pdf"
+    openAI:
+      # Disables file uploading to the OpenAI endpoint
+      disabled: true
+    default:
+      totalSizeLimit: 20
+    # Example for custom endpoints
+    # YourCustomEndpointName:
+    #   fileLimit: 2
+    #   fileSizeLimit: 5
+  # Global server file size limit in MB
+  serverFileSizeLimit: 100  
+  # Limit for user avatar image size in MB, default: 2 MB
+  avatarSizeLimit: 4 
+rateLimits:
+  fileUploads:
+    ipMax: 100
+    # Rate limit window for file uploads per IP
+    ipWindowInMinutes: 60 
+    userMax: 50
+    # Rate limit window for file uploads per user
+    userWindowInMinutes: 60  
+registration:
+  socialLogins: ["google", "facebook", "github", "discord", "openid"]
+  allowedDomains:
+    - "example.com"
+    - "anotherdomain.com"
+endpoints:
+  assistants:
+    # Disable Assistants Builder Interface by setting to `true`
+    disableBuilder: false 
+    # Polling interval for checking assistant updates
+    pollIntervalMs: 750  
+    # Timeout for assistant operations
+    timeoutMs: 180000  
+    # Should only be one or the other, either `supportedIds` or `excludedIds`
+    supportedIds: ["asst_supportedAssistantId1", "asst_supportedAssistantId2"]
+    # excludedIds: ["asst_excludedAssistantId"]
+    # (optional) Models that support retrieval, will default to latest known OpenAI models that support the feature
+    # retrievalModels: ["gpt-4-turbo-preview"]
+    # (optional) Assistant Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
+    # capabilities: ["code_interpreter", "retrieval", "actions", "tools", "image_vision"]
+  custom:
+    - name: "zukijourney"
+      apiKey: "zu-82ed007fda18d7abf41c791a55f5fe19"
+      baseURL: "https://zukijourney.xyzbot.net/v1"
+      models:
+        default: [
+          "gpt-3.5-turbo",
+          "gpt-3.5-turbo-instruct",
+          "gpt-3.5-turbo-16k",
+          "gpt-4",
+          "gpt-4-32k",
+          "gpt-4-1106-preview",
+          "gpt-4-0125-preview",
+          "gpt-4-vision-preview",
+          "claude-instant-v1",
+          "claude-1.2",
+          "claude-2",
+          "claude-2.1",
+          "claude-3-haiku",
+          "claude-3-sonnet",
+          "claude-3-opus",
+          "palm-2",
+          "gemini-pro",
+          "gemini-pro-vision",
+          "gemini-1.5-pro-preview-0215",
+          "gemma-7b",
+          "mixtral",
+          "mistral-tiny",
+          "mistral-small",
+          "mistral-medium",
+          "mistral-large-latest",
+          "llama-2-7b-chat",
+          "llama-2-13b-chat",
+          "llama-2-70b-chat",
+          "llava-1.6",
+          "yi-34b",
+          "openchat",
+          "sheep-duck-llama",
+          "goliath-120b",
+          "solar10-7b",
+          "vicuna-13b",
+          "pi",
+          "mythomist-7b",
+          "mythomax-l2-13b",
+          "cinematika-7b",
+          "toppy-7b",
+          "nous-capybara-7b",
+          "sonar-small-chat",
+          "sonar-medium-chat",
+          "sonar-small-online",
+          "sonar-medium-online",
+          "dbrx-instruct",
+          "command-r",
+          "starling-lm-7b-beta",
+          "olmo-7b-instruct",
+          "dall-e-3",
+          "midjourney",
+          "sdxl",
+          "sdxl-turbo",
+          "sdxl-lightning-fast",
+          "leonardo-ai",
+          "kandinsky-2.2",
+          "kandinsky-3",
+          "opendalle-v4",
+          "latent-consistency-model",
+          "playground-v2",
+          "playground-v2.5",
+          "pollinations",
+          "realvisxl-v3",
+          "realvisxl-v4",
+          "pixart-xl-2",
+          "dreamshaper-xl-turbo",
+          "proteus-v4",
+          "albedobaseXL_v13",
+          "Deliberate_v2",
+          "dreamlabsoil_V2_v2",
+          "juggernautXL_v8Rundiffusion",
+          "Realistic_Vision_V5.1",
+          "Realistic_Vision_V6.0_NV_B1_fp16",
+          "SSD-1B",
+          "sd_xl_base_1.0",
+          "starlightXLAnimated_v3",
+          "turbovisionxlSuperFastXLBasedOnNew_txvlV32BakedV3",
+          "v1-5-pruned-emaonly",
+          "v2-1_768-ema-pruned",
+          "sdxl-deepcache",
+          "pastel-mix-anime",
+          "absolute-reality-v1.6",
+          "absolute-reality-v1.8.1",
+          "anything-v3",
+          "anything-v4.5",
+          "anything-v5",
+          "meinamix",
+          "deliberate-v2",
+          "deliberate-v3",
+          "rev-animated",
+          "dreamshaper-6",
+          "dreamshaper-7",
+          "dreamshaper-8",
+          "realistic-vision-v1.4",
+          "realistic-vision-v2",
+          "realistic-vision-v4",
+          "realistic-vision-v5",
+          "openjourney-v4",
+          "3-guofeng3-v3.4",
+          "am-i-real-v4.1",
+          "analog-v1",
+          "abyssorangemix-v3",
+          "blazing-drive-v10g",
+          "cetusmix-version35",
+          "children's-stories-v1-3d",
+          "children's-stories-v1-semireal",
+          "children's-stories-v1-toon-anime",
+          "counterfeit-v3.0",
+          "cuteyukimix-midchapter3",
+          "cyberrealistic-v3.3",
+          "dalcefo-v4",
+          "dreamlike-anime-v1",
+          "dreamlike-diffusion-v1",
+          "dreamlike-photoreal-v2",
+          "edge-of-realism-eor-v2.0",
+          "eimis-anime-diffusion-v1.0",
+          "elldreth's-vivid",
+          "epicrealism-natural-sin-rc1",
+          "i-cant-believe-its-not-photography-seco",
+          "juggernaut-aftermath",
+          "lofi-v4",
+          "lyriel-v1.6",
+          "majicmix-realistic-v4",
+          "mechamix-v1.0",
+          "meinamix-meina-v9",
+          "neverending-dream-v1.22",
+          "portrait+-v1",
+          "protogen-x3.4",
+          "redshift-diffusion-v1.0",
+          "rundiffusion-fx-2.5d-v1.0",
+          "rundiffusion-fx-photorealistic-v1.0",
+          "sd-v1.4",
+          "sd-v1.5",
+          "sd-v1.5-inpainting",
+          "shonin's-beautiful-people-v1.0",
+          "theally's-mix-ii",
+          "timeless-v1",
+          "toonyou-beta-6",
+          "tts-1",
+          "tts-1-hd",
+          "tts-1-1106",
+          "tts-1-hd-1106",
+          "tts-1-google",
+          "text-embedding-ada-002",
+          "text-embedding-3-small",
+          "text-embedding-3-large",
+          "e5-mistral-7b-instruct",
+          "nomic-embed-text",
+          "whisper",
+          "translations"
+        ]
+        # Attempt to dynamically fetch available models
+        fetch: true  
+        userIdQuery: false
+      iconURL: "https://example.com/mistral-icon.png"
+      titleConvo: true
+      titleModel: "Mistral AI"
+      modelDisplayLabel: "Mistral AI"
+      # addParams:
+      # Mistral API specific value for moderating messages
+      #   safe_prompt: true 
+      dropParams:
+        - "stop"
+        - "user"
+        - "presence_penalty"
+        - "frequency_penalty"
+      # headers:
+      #    x-custom-header: "${CUSTOM_HEADER_VALUE}"
+    - name: "OpenRouter"
+      apiKey: "${OPENROUTER_API_KEY}"
+      baseURL: "https://openrouter.ai/api/v1"
+      models:
+        default: ["gpt-3.5-turbo"]
+        fetch: false
+      titleConvo: true
+      titleModel: "gpt-3.5-turbo"
+      modelDisplayLabel: "OpenRouter"
+      dropParams:
+        - "stop"
+        - "frequency_penalty"
+    - name: "ShuttleAI"
+      apiKey: "shuttle-0cfd5cf7ea0035527dda"
+      baseURL: "https://api.shuttleai.app/v1"
+      models:
+        default: [
+          "shuttle-2-turbo", "shuttle-turbo"
+          ]
+        fetch: true
+      titleConvo: true
+      titleModel: "shuttle-2-turbo"
+      summarize: false
+      summaryModel: "shuttle-2-turbo"
+      forcePrompt: false
+      modelDisplayLabel: "ShuttleAI"
+      dropParams: ["user"]
+    - name: "WebRaft"
+      apiKey: "fresed-68HD6scSiwKOCvTXnF94lkEQbl4oDA"
+      baseURL: "https://fresedgpt.space/v1"
+      models:
+        default: [
+          "mistral-small"
+          ]
+        fetch: true
+      titleConvo: true
+      titleModel: "WebRaft"
+      modelDisplayLabel: "WebRaft"
+      dropParams:
+        - "stop"
+        - "user"
+        - "presence_penalty"
+        - "frequency_penalty"
+    - name: "Hentai"
+      apiKey: "ht-s3v5ruubfgpcw4asmegc3lqaa27xk2wl"
+      baseURL: "https://api.hentaigpt.xyz/v1"
+      models:
+        default: [
+          "mistral-small"
+          ]
+        fetch: true
+      titleConvo: true
+      titleModel: "Hentai"
+      modelDisplayLabel: "Hentai"
+      dropParams:
+        - "stop"
+        - "user"
+        - "presence_penalty"
+        - "frequency_penalty"
+    
