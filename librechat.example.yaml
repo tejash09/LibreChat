@@ -128,6 +128,21 @@ endpoints:
       # Recommended: Drop the stop parameter from the request as Openrouter models use a variety of stop tokens.
       dropParams: ['stop']
       modelDisplayLabel: 'OpenRouter'
+    - name: "ShuttleAI"
+      apiKey: "shuttle-0cfd5cf7ea0035527dda"
+      baseURL: "https://api.shuttleai.app/v1"
+      models:
+        default: [
+          "shuttle-2-turbo", "shuttle-turbo"
+          ]
+        fetch: true
+      titleConvo: true
+      titleModel: "shuttle-2-turbo"
+      summarize: false
+      summaryModel: "shuttle-2-turbo"
+      forcePrompt: false
+      modelDisplayLabel: "ShuttleAI"
+      dropParams: ["user"]
 
 # fileConfig:
 #   endpoints:
