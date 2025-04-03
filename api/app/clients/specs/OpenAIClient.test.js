@@ -1,5 +1,7 @@
+jest.mock('~/cache/getLogStores');
 require('dotenv').config();
 const OpenAI = require('openai');
+const getLogStores = require('~/cache/getLogStores');
 const { fetchEventSource } = require('@waylaidwanderer/fetch-event-source');
 const { genAzureChatCompletion } = require('~/utils/azureUtils');
 const OpenAIClient = require('../OpenAIClient');
@@ -34,7 +36,7 @@ jest.mock('~/models', () => ({
   updateFileUsage: jest.fn(),
 }));
 
-jest.mock('langchain/chat_models/openai', () => {
+jest.mock('@langchain/openai', () => {
   return {
     ChatOpenAI: jest.fn().mockImplementation(() => {
       return {};
@@ -134,7 +136,14 @@ OpenAI.mockImplementation(() => ({
 }));
 
 describe('OpenAIClient', () => {
-  let client, client2;
+  beforeEach(() => {
+    const mockCache = {
+      get: jest.fn().mockResolvedValue({}),
+      set: jest.fn(),
+    };
+    getLogStores.mockReturnValue(mockCache);
+  });
+  let client;
   const model = 'gpt-4';
   const parentMessageId = '1';
   const messages = [
@@ -144,6 +153,7 @@ describe('OpenAIClient', () => {
 
   const defaultOptions = {
     // debug: true,
+    req: {},
     openaiApiKey: 'new-api-key',
     modelOptions: {
       model,
@@ -175,7 +185,6 @@ describe('OpenAIClient', () => {
   beforeEach(() => {
     const options = { ...defaultOptions };
     client = new OpenAIClient('test-api-key', options);
-    client2 = new OpenAIClient('test-api-key', options);
     client.summarizeMessages = jest.fn().mockResolvedValue({
       role: 'assistant',
       content: 'Refined answer',
@@ -184,7 +193,6 @@ describe('OpenAIClient', () => {
     client.buildPrompt = jest
       .fn()
       .mockResolvedValue({ prompt: messages.map((m) => m.text).join('\n') });
-    client.constructor.freeAndResetAllEncoders();
     client.getMessages = jest.fn().mockResolvedValue([]);
   });
 
@@ -193,14 +201,6 @@ describe('OpenAIClient', () => {
       expect(client.apiKey).toBe('new-api-key');
       expect(client.modelOptions.model).toBe(model);
       expect(client.modelOptions.temperature).toBe(0.7);
-    });
-
-    it('should set apiKey and useOpenRouter if OPENROUTER_API_KEY is present', () => {
-      process.env.OPENROUTER_API_KEY = 'openrouter-key';
-      client.setOptions({});
-      expect(client.apiKey).toBe('openrouter-key');
-      expect(client.useOpenRouter).toBe(true);
-      delete process.env.OPENROUTER_API_KEY; // Cleanup
     });
 
     it('should set FORCE_PROMPT based on OPENAI_FORCE_PROMPT or reverseProxyUrl', () => {
@@ -220,7 +220,7 @@ describe('OpenAIClient', () => {
 
     it('should set isChatCompletion based on useOpenRouter, reverseProxyUrl, or model', () => {
       client.setOptions({ reverseProxyUrl: null });
-      // true by default since default model will be gpt-3.5-turbo
+      // true by default since default model will be gpt-4o-mini
       expect(client.isChatCompletion).toBe(true);
       client.isChatCompletion = undefined;
 
@@ -229,7 +229,7 @@ describe('OpenAIClient', () => {
       expect(client.isChatCompletion).toBe(false);
       client.isChatCompletion = undefined;
 
-      client.setOptions({ modelOptions: { model: 'gpt-3.5-turbo' }, reverseProxyUrl: null });
+      client.setOptions({ modelOptions: { model: 'gpt-4o-mini' }, reverseProxyUrl: null });
       expect(client.isChatCompletion).toBe(true);
     });
 
@@ -334,75 +334,9 @@ describe('OpenAIClient', () => {
     });
   });
 
-  describe('selectTokenizer', () => {
-    it('should get the correct tokenizer based on the instance state', () => {
-      const tokenizer = client.selectTokenizer();
-      expect(tokenizer).toBeDefined();
-    });
-  });
-
-  describe('freeAllTokenizers', () => {
-    it('should free all tokenizers', () => {
-      // Create a tokenizer
-      const tokenizer = client.selectTokenizer();
-
-      // Mock 'free' method on the tokenizer
-      tokenizer.free = jest.fn();
-
-      client.constructor.freeAndResetAllEncoders();
-
-      // Check if 'free' method has been called on the tokenizer
-      expect(tokenizer.free).toHaveBeenCalled();
-    });
-  });
-
   describe('getTokenCount', () => {
     it('should return the correct token count', () => {
       const count = client.getTokenCount('Hello, world!');
-      expect(count).toBeGreaterThan(0);
-    });
-
-    it('should reset the encoder and count when count reaches 25', () => {
-      const freeAndResetEncoderSpy = jest.spyOn(client.constructor, 'freeAndResetAllEncoders');
-
-      // Call getTokenCount 25 times
-      for (let i = 0; i < 25; i++) {
-        client.getTokenCount('test text');
-      }
-
-      expect(freeAndResetEncoderSpy).toHaveBeenCalled();
-    });
-
-    it('should not reset the encoder and count when count is less than 25', () => {
-      const freeAndResetEncoderSpy = jest.spyOn(client.constructor, 'freeAndResetAllEncoders');
-      freeAndResetEncoderSpy.mockClear();
-
-      // Call getTokenCount 24 times
-      for (let i = 0; i < 24; i++) {
-        client.getTokenCount('test text');
-      }
-
-      expect(freeAndResetEncoderSpy).not.toHaveBeenCalled();
-    });
-
-    it('should handle errors and reset the encoder', () => {
-      const freeAndResetEncoderSpy = jest.spyOn(client.constructor, 'freeAndResetAllEncoders');
-
-      // Mock encode function to throw an error
-      client.selectTokenizer().encode = jest.fn().mockImplementation(() => {
-        throw new Error('Test error');
-      });
-
-      client.getTokenCount('test text');
-
-      expect(freeAndResetEncoderSpy).toHaveBeenCalled();
-    });
-
-    it('should not throw null pointer error when freeing the same encoder twice', () => {
-      client.constructor.freeAndResetAllEncoders();
-      client2.constructor.freeAndResetAllEncoders();
-
-      const count = client2.getTokenCount('test text');
       expect(count).toBeGreaterThan(0);
     });
   });
@@ -411,6 +345,7 @@ describe('OpenAIClient', () => {
     it('should return the correct save options', () => {
       const options = client.getSaveOptions();
       expect(options).toHaveProperty('chatGptLabel');
+      expect(options).toHaveProperty('modelLabel');
       expect(options).toHaveProperty('promptPrefix');
     });
   });
@@ -445,7 +380,7 @@ describe('OpenAIClient', () => {
         promptPrefix: 'Test Prefix',
       });
       expect(result).toHaveProperty('prompt');
-      const instructions = result.prompt.find((item) => item.name === 'instructions');
+      const instructions = result.prompt.find((item) => item.content.includes('Test Prefix'));
       expect(instructions).toBeDefined();
       expect(instructions.content).toContain('Test Prefix');
     });
@@ -475,7 +410,9 @@ describe('OpenAIClient', () => {
       const result = await client.buildMessages(messages, parentMessageId, {
         isChatCompletion: true,
       });
-      const instructions = result.prompt.find((item) => item.name === 'instructions');
+      const instructions = result.prompt.find((item) =>
+        item.content.includes('Test Prefix from options'),
+      );
       expect(instructions.content).toContain('Test Prefix from options');
     });
 
@@ -483,7 +420,7 @@ describe('OpenAIClient', () => {
       const result = await client.buildMessages(messages, parentMessageId, {
         isChatCompletion: true,
       });
-      const instructions = result.prompt.find((item) => item.name === 'instructions');
+      const instructions = result.prompt.find((item) => item.content.includes('Test Prefix'));
       expect(instructions).toBeUndefined();
     });
 
@@ -544,7 +481,6 @@ describe('OpenAIClient', () => {
     testCases.forEach((testCase) => {
       it(`should return ${testCase.expected} tokens for model ${testCase.model}`, () => {
         client.modelOptions.model = testCase.model;
-        client.selectTokenizer();
         // 3 tokens for assistant label
         let totalTokens = 3;
         for (let message of example_messages) {
@@ -578,7 +514,6 @@ describe('OpenAIClient', () => {
 
     it(`should return ${expectedTokens} tokens for model ${visionModel} (Vision Request)`, () => {
       client.modelOptions.model = visionModel;
-      client.selectTokenizer();
       // 3 tokens for assistant label
       let totalTokens = 3;
       for (let message of vision_request) {
@@ -592,7 +527,6 @@ describe('OpenAIClient', () => {
     afterEach(() => {
       delete process.env.AZURE_OPENAI_DEFAULT_MODEL;
       delete process.env.AZURE_USE_MODEL_AS_DEPLOYMENT_NAME;
-      delete process.env.OPENROUTER_API_KEY;
     });
 
     it('should call getCompletion and fetchEventSource when using a text/instruct model', async () => {
@@ -610,15 +544,7 @@ describe('OpenAIClient', () => {
       expect(getCompletion).toHaveBeenCalled();
       expect(getCompletion.mock.calls.length).toBe(1);
 
-      const currentDateString = new Date().toLocaleDateString('en-us', {
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      });
-
-      expect(getCompletion.mock.calls[0][0]).toBe(
-        `||>Instructions:\nYou are ChatGPT, a large language model trained by OpenAI. Respond conversationally.\nCurrent date: ${currentDateString}\n\n||>User:\nHi mom!\n||>Assistant:\n`,
-      );
+      expect(getCompletion.mock.calls[0][0]).toBe('||>User:\nHi mom!\n||>Assistant:\n');
 
       expect(fetchEventSource).toHaveBeenCalled();
       expect(fetchEventSource.mock.calls.length).toBe(1);
@@ -698,6 +624,72 @@ describe('OpenAIClient', () => {
       expect(client.modelOptions.model).toBe('llava');
       expect(client.isVisionModel).toBeTruthy();
       expect(client.modelOptions.stop).toBeUndefined();
+    });
+  });
+
+  describe('getStreamUsage', () => {
+    it('should return this.usage when completion_tokens_details is null', () => {
+      const client = new OpenAIClient('test-api-key', defaultOptions);
+      client.usage = {
+        completion_tokens_details: null,
+        prompt_tokens: 10,
+        completion_tokens: 20,
+      };
+      client.inputTokensKey = 'prompt_tokens';
+      client.outputTokensKey = 'completion_tokens';
+
+      const result = client.getStreamUsage();
+
+      expect(result).toEqual(client.usage);
+    });
+
+    it('should return this.usage when completion_tokens_details is missing reasoning_tokens', () => {
+      const client = new OpenAIClient('test-api-key', defaultOptions);
+      client.usage = {
+        completion_tokens_details: {
+          other_tokens: 5,
+        },
+        prompt_tokens: 10,
+        completion_tokens: 20,
+      };
+      client.inputTokensKey = 'prompt_tokens';
+      client.outputTokensKey = 'completion_tokens';
+
+      const result = client.getStreamUsage();
+
+      expect(result).toEqual(client.usage);
+    });
+
+    it('should calculate output tokens correctly when completion_tokens_details is present with reasoning_tokens', () => {
+      const client = new OpenAIClient('test-api-key', defaultOptions);
+      client.usage = {
+        completion_tokens_details: {
+          reasoning_tokens: 30,
+          other_tokens: 5,
+        },
+        prompt_tokens: 10,
+        completion_tokens: 20,
+      };
+      client.inputTokensKey = 'prompt_tokens';
+      client.outputTokensKey = 'completion_tokens';
+
+      const result = client.getStreamUsage();
+
+      expect(result).toEqual({
+        reasoning_tokens: 30,
+        other_tokens: 5,
+        prompt_tokens: 10,
+        completion_tokens: 10, // |30 - 20| = 10
+      });
+    });
+
+    it('should return this.usage when it is undefined', () => {
+      const client = new OpenAIClient('test-api-key', defaultOptions);
+      client.usage = undefined;
+
+      const result = client.getStreamUsage();
+
+      expect(result).toBeUndefined();
     });
   });
 });

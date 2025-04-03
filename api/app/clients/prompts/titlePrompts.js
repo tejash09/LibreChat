@@ -2,7 +2,7 @@ const {
   ChatPromptTemplate,
   SystemMessagePromptTemplate,
   HumanMessagePromptTemplate,
-} = require('langchain/prompts');
+} = require('@langchain/core/prompts');
 
 const langPrompt = new ChatPromptTemplate({
   promptMessages: [
@@ -28,7 +28,7 @@ ${convo}`,
 };
 
 const titleInstruction =
-  'a concise, 5-word-or-less title for the conversation, using its same language, with no punctuation. Apply title case conventions appropriate for the language. For English, use AP Stylebook Title Case. Never directly mention the language name or the word "title"';
+  'a concise, 5-word-or-less title for the conversation, using its same language, with no punctuation. Apply title case conventions appropriate for the language. Never directly mention the language name or the word "title"';
 const titleFunctionPrompt = `In this environment you have access to a set of tools you can use to generate the conversation title.
   
 You may call them like this:
@@ -99,10 +99,24 @@ ONLY include the generated translation without quotations, nor its related key</
  * @returns {string} The parsed parameter's value or a default value if not found.
  */
 function parseParamFromPrompt(prompt, paramName) {
-  const paramRegex = new RegExp(`<${paramName}>([\\s\\S]+?)</${paramName}>`);
+  // Handle null/undefined prompt
+  if (!prompt) {
+    return `No ${paramName} provided`;
+  }
+
+  // Try original format first: <title>value</title>
+  const simpleRegex = new RegExp(`<${paramName}>(.*?)</${paramName}>`, 's');
+  const simpleMatch = prompt.match(simpleRegex);
+
+  if (simpleMatch) {
+    return simpleMatch[1].trim();
+  }
+
+  // Try parameter format: <parameter name="title">value</parameter>
+  const paramRegex = new RegExp(`<parameter name="${paramName}">(.*?)</parameter>`, 's');
   const paramMatch = prompt.match(paramRegex);
 
-  if (paramMatch && paramMatch[1]) {
+  if (paramMatch) {
     return paramMatch[1].trim();
   }
 

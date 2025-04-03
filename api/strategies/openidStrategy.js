@@ -1,9 +1,13 @@
+const fetch = require('node-fetch');
 const passport = require('passport');
 const jwtDecode = require('jsonwebtoken/decode');
-const { Issuer, Strategy: OpenIDStrategy } = require('openid-client');
+const { HttpsProxyAgent } = require('https-proxy-agent');
+const { Issuer, Strategy: OpenIDStrategy, custom } = require('openid-client');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { findUser, createUser, updateUser } = require('~/models/userMethods');
+const { hashToken } = require('~/server/utils/crypto');
+const { isEnabled } = require('~/server/utils');
 const { logger } = require('~/config');
-const User = require('~/models/User');
 
 let crypto;
 try {
@@ -11,6 +15,7 @@ try {
 } catch (err) {
   logger.error('[openidStrategy] crypto support is disabled!', err);
 }
+
 /**
  * Downloads an image from a URL using an access token.
  * @param {string} url
@@ -23,12 +28,18 @@ const downloadImage = async (url, accessToken) => {
   }
 
   try {
-    const response = await fetch(url, {
+    const options = {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
-    });
+    };
+
+    if (process.env.PROXY) {
+      options.agent = new HttpsProxyAgent(process.env.PROXY);
+    }
+
+    const response = await fetch(url, options);
 
     if (response.ok) {
       const buffer = await response.buffer();
@@ -43,6 +54,36 @@ const downloadImage = async (url, accessToken) => {
     return '';
   }
 };
+
+/**
+ * Determines the full name of a user based on OpenID userinfo and environment configuration.
+ *
+ * @param {Object} userinfo - The user information object from OpenID Connect
+ * @param {string} [userinfo.given_name] - The user's first name
+ * @param {string} [userinfo.family_name] - The user's last name
+ * @param {string} [userinfo.username] - The user's username
+ * @param {string} [userinfo.email] - The user's email address
+ * @returns {string} The determined full name of the user
+ */
+function getFullName(userinfo) {
+  if (process.env.OPENID_NAME_CLAIM) {
+    return userinfo[process.env.OPENID_NAME_CLAIM];
+  }
+
+  if (userinfo.given_name && userinfo.family_name) {
+    return `${userinfo.given_name} ${userinfo.family_name}`;
+  }
+
+  if (userinfo.given_name) {
+    return userinfo.given_name;
+  }
+
+  if (userinfo.family_name) {
+    return userinfo.family_name;
+  }
+
+  return userinfo.username || userinfo.email;
+}
 
 /**
  * Converts an input into a string suitable for a username.
@@ -66,12 +107,32 @@ function convertToUsername(input, defaultValue = '') {
 
 async function setupOpenId() {
   try {
+    if (process.env.PROXY) {
+      const proxyAgent = new HttpsProxyAgent(process.env.PROXY);
+      custom.setHttpOptionsDefaults({
+        agent: proxyAgent,
+      });
+      logger.info(`[openidStrategy] proxy agent added: ${process.env.PROXY}`);
+    }
     const issuer = await Issuer.discover(process.env.OPENID_ISSUER);
-    const client = new issuer.Client({
+    /* Supported Algorithms, openid-client v5 doesn't set it automatically as discovered from server.
+      - id_token_signed_response_alg      // defaults to 'RS256'
+      - request_object_signing_alg        // defaults to 'RS256'
+      - userinfo_signed_response_alg      // not in v5
+      - introspection_signed_response_alg // not in v5
+      - authorization_signed_response_alg // not in v5
+    */
+    /** @type {import('openid-client').ClientMetadata} */
+    const clientMetadata = {
       client_id: process.env.OPENID_CLIENT_ID,
       client_secret: process.env.OPENID_CLIENT_SECRET,
       redirect_uris: [process.env.DOMAIN_SERVER + process.env.OPENID_CALLBACK_URL],
-    });
+    };
+    if (isEnabled(process.env.OPENID_SET_FIRST_SUPPORTED_ALGORITHM)) {
+      clientMetadata.id_token_signed_response_alg =
+        issuer.id_token_signing_alg_values_supported?.[0] || 'RS256';
+    }
+    const client = new issuer.Client(clientMetadata);
     const requiredRole = process.env.OPENID_REQUIRED_ROLE;
     const requiredRoleParameterPath = process.env.OPENID_REQUIRED_ROLE_PARAMETER_PATH;
     const requiredRoleTokenKind = process.env.OPENID_REQUIRED_ROLE_TOKEN_KIND;
@@ -84,22 +145,24 @@ async function setupOpenId() {
       },
       async (tokenset, userinfo, done) => {
         try {
-          let user = await User.findOne({ openidId: userinfo.sub });
+          logger.info(`[openidStrategy] verify login openidId: ${userinfo.sub}`);
+          logger.debug('[openidStrategy] very login tokenset and userinfo', { tokenset, userinfo });
+
+          let user = await findUser({ openidId: userinfo.sub });
+          logger.info(
+            `[openidStrategy] user ${user ? 'found' : 'not found'} with openidId: ${userinfo.sub}`,
+          );
 
           if (!user) {
-            user = await User.findOne({ email: userinfo.email });
+            user = await findUser({ email: userinfo.email });
+            logger.info(
+              `[openidStrategy] user ${user ? 'found' : 'not found'} with email: ${
+                userinfo.email
+              } for openidId: ${userinfo.sub}`,
+            );
           }
 
-          let fullName = '';
-          if (userinfo.given_name && userinfo.family_name) {
-            fullName = userinfo.given_name + ' ' + userinfo.family_name;
-          } else if (userinfo.given_name) {
-            fullName = userinfo.given_name;
-          } else if (userinfo.family_name) {
-            fullName = userinfo.family_name;
-          } else {
-            fullName = userinfo.username || userinfo.email;
-          }
+          const fullName = getFullName(userinfo);
 
           if (requiredRole) {
             let decodedToken = '';
@@ -119,8 +182,8 @@ async function setupOpenId() {
             }, decodedToken);
 
             if (!found) {
-              console.error(
-                `Key '${requiredRoleParameterPath}' not found in ${requiredRoleTokenKind} token!`,
+              logger.error(
+                `[openidStrategy] Key '${requiredRoleParameterPath}' not found in ${requiredRoleTokenKind} token!`,
               );
             }
 
@@ -131,19 +194,25 @@ async function setupOpenId() {
             }
           }
 
-          const username = convertToUsername(
-            userinfo.username || userinfo.given_name || userinfo.email,
-          );
+          let username = '';
+          if (process.env.OPENID_USERNAME_CLAIM) {
+            username = userinfo[process.env.OPENID_USERNAME_CLAIM];
+          } else {
+            username = convertToUsername(
+              userinfo.username || userinfo.given_name || userinfo.email,
+            );
+          }
 
           if (!user) {
-            user = new User({
+            user = {
               provider: 'openid',
               openidId: userinfo.sub,
               username,
               email: userinfo.email || '',
               emailVerified: userinfo.email_verified || false,
               name: fullName,
-            });
+            };
+            user = await createUser(user, true, true);
           } else {
             user.provider = 'openid';
             user.openidId = userinfo.sub;
@@ -151,39 +220,46 @@ async function setupOpenId() {
             user.name = fullName;
           }
 
-          if (userinfo.picture) {
+          if (userinfo.picture && !user.avatar?.includes('manual=true')) {
             /** @type {string | undefined} */
             const imageUrl = userinfo.picture;
 
             let fileName;
             if (crypto) {
-              const hash = crypto.createHash('sha256');
-              hash.update(userinfo.sub);
-              fileName = hash.digest('hex') + '.png';
+              fileName = (await hashToken(userinfo.sub)) + '.png';
             } else {
               fileName = userinfo.sub + '.png';
             }
 
             const imageBuffer = await downloadImage(imageUrl, tokenset.access_token);
-            const { saveBuffer } = getStrategyFunctions(process.env.CDN_PROVIDER);
             if (imageBuffer) {
+              const { saveBuffer } = getStrategyFunctions(process.env.CDN_PROVIDER);
               const imagePath = await saveBuffer({
                 fileName,
                 userId: user._id.toString(),
                 buffer: imageBuffer,
               });
               user.avatar = imagePath ?? '';
-            } else {
-              user.avatar = '';
             }
-          } else {
-            user.avatar = '';
           }
 
-          await user.save();
+          user = await updateUser(user._id, user);
+
+          logger.info(
+            `[openidStrategy] login success openidId: ${user.openidId} | email: ${user.email} | username: ${user.username} `,
+            {
+              user: {
+                openidId: user.openidId,
+                username: user.username,
+                email: user.email,
+                name: user.name,
+              },
+            },
+          );
 
           done(null, user);
         } catch (err) {
+          logger.error('[openidStrategy] login failed', err);
           done(err);
         }
       },

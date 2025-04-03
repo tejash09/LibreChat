@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require('uuid');
-const { EModelEndpoint, Constants, openAISettings } = require('librechat-data-provider');
+const { EModelEndpoint, Constants, openAISettings, CacheKeys } = require('librechat-data-provider');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
+const getLogStores = require('~/cache/getLogStores');
 const logger = require('~/config/winston');
 
 /**
@@ -24,7 +25,7 @@ function getImporter(jsonData) {
   }
 
   // For LibreChat
-  if (jsonData.conversationId && jsonData.messagesTree) {
+  if (jsonData.conversationId && (jsonData.messagesTree || jsonData.messages)) {
     logger.info('Importing LibreChat conversation');
     return importLibreChatConvo;
   }
@@ -85,47 +86,98 @@ async function importLibreChatConvo(
   try {
     /** @type {ImportBatchBuilder} */
     const importBatchBuilder = builderFactory(requestUserId);
-    importBatchBuilder.startConversation(EModelEndpoint.openAI);
+    const options = jsonData.options || {};
+
+    /* Endpoint configuration */
+    let endpoint = jsonData.endpoint ?? options.endpoint ?? EModelEndpoint.openAI;
+    const cache = getLogStores(CacheKeys.CONFIG_STORE);
+    const endpointsConfig = await cache.get(CacheKeys.ENDPOINT_CONFIG);
+    const endpointConfig = endpointsConfig?.[endpoint];
+    if (!endpointConfig && endpointsConfig) {
+      endpoint = Object.keys(endpointsConfig)[0];
+    } else if (!endpointConfig) {
+      endpoint = EModelEndpoint.openAI;
+    }
+
+    importBatchBuilder.startConversation(endpoint);
 
     let firstMessageDate = null;
 
-    const traverseMessages = (messages, parentMessageId = null) => {
-      for (const message of messages) {
-        if (!message.text) {
-          continue;
-        }
+    const messagesToImport = jsonData.messagesTree || jsonData.messages;
 
-        let savedMessage;
-        if (message.sender?.toLowerCase() === 'user') {
-          savedMessage = importBatchBuilder.saveMessage({
-            text: message.text,
-            sender: 'user',
-            isCreatedByUser: true,
-            parentMessageId: parentMessageId,
-          });
-        } else {
-          savedMessage = importBatchBuilder.saveMessage({
-            text: message.text,
-            sender: message.sender,
-            isCreatedByUser: false,
-            model: jsonData.options.model,
-            parentMessageId: parentMessageId,
-          });
-        }
+    if (jsonData.recursive) {
+      /**
+       * Recursively traverse the messages tree and save each message to the database.
+       * @param {TMessage[]} messages
+       * @param {string} parentMessageId
+       */
+      const traverseMessages = async (messages, parentMessageId = null) => {
+        for (const message of messages) {
+          if (!message.text && !message.content) {
+            continue;
+          }
 
-        if (!firstMessageDate) {
+          let savedMessage;
+          if (message.sender?.toLowerCase() === 'user' || message.isCreatedByUser) {
+            savedMessage = await importBatchBuilder.saveMessage({
+              text: message.text,
+              content: message.content,
+              sender: 'user',
+              isCreatedByUser: true,
+              parentMessageId: parentMessageId,
+            });
+          } else {
+            savedMessage = await importBatchBuilder.saveMessage({
+              text: message.text,
+              content: message.content,
+              sender: message.sender,
+              isCreatedByUser: false,
+              model: options.model,
+              parentMessageId: parentMessageId,
+            });
+          }
+
+          if (!firstMessageDate && message.createdAt) {
+            firstMessageDate = new Date(message.createdAt);
+          }
+
+          if (message.children && message.children.length > 0) {
+            await traverseMessages(message.children, savedMessage.messageId);
+          }
+        }
+      };
+
+      await traverseMessages(messagesToImport);
+    } else if (messagesToImport) {
+      const idMapping = new Map();
+
+      for (const message of messagesToImport) {
+        if (!firstMessageDate && message.createdAt) {
           firstMessageDate = new Date(message.createdAt);
         }
+        const newMessageId = uuidv4();
+        idMapping.set(message.messageId, newMessageId);
 
-        if (message.children) {
-          traverseMessages(message.children, savedMessage.messageId);
-        }
+        const clonedMessage = {
+          ...message,
+          messageId: newMessageId,
+          parentMessageId:
+            message.parentMessageId && message.parentMessageId !== Constants.NO_PARENT
+              ? idMapping.get(message.parentMessageId) || Constants.NO_PARENT
+              : Constants.NO_PARENT,
+        };
+
+        importBatchBuilder.saveMessage(clonedMessage);
       }
-    };
+    } else {
+      throw new Error('Invalid LibreChat file format');
+    }
 
-    traverseMessages(jsonData.messagesTree);
+    if (firstMessageDate === 'Invalid Date') {
+      firstMessageDate = null;
+    }
 
-    importBatchBuilder.finishConversation(jsonData.title, firstMessageDate);
+    importBatchBuilder.finishConversation(jsonData.title, firstMessageDate ?? new Date(), options);
     await importBatchBuilder.saveBatch();
     logger.debug(`user: ${requestUserId} | Conversation "${jsonData.title}" imported`);
   } catch (error) {
@@ -227,34 +279,39 @@ function processConversation(conv, importBatchBuilder, requestUserId) {
 
 /**
  * Processes text content of messages authored by an assistant, inserting citation links as required.
- * Applies citation metadata to construct regex patterns and replacements for inserting links into the text.
+ * Uses citation start and end indices to place links at the correct positions.
  *
  * @param {ChatGPTMessage} messageData - The message data containing metadata about citations.
  * @param {string} messageText - The original text of the message which may be altered by inserting citation links.
  * @returns {string} - The updated message text after processing for citations.
  */
 function processAssistantMessage(messageData, messageText) {
-  const citations = messageData.metadata.citations ?? [];
+  if (!messageText) {
+    return messageText;
+  }
 
-  for (const citation of citations) {
+  const citations = messageData.metadata?.citations ?? [];
+
+  const sortedCitations = [...citations].sort((a, b) => b.start_ix - a.start_ix);
+
+  let result = messageText;
+  for (const citation of sortedCitations) {
     if (
-      !citation.metadata ||
-      !citation.metadata.extra ||
-      !citation.metadata.extra.cited_message_idx ||
-      (citation.metadata.type && citation.metadata.type !== 'webpage')
+      !citation.metadata?.type ||
+      citation.metadata.type !== 'webpage' ||
+      typeof citation.start_ix !== 'number' ||
+      typeof citation.end_ix !== 'number' ||
+      citation.start_ix >= citation.end_ix
     ) {
       continue;
     }
 
-    const pattern = new RegExp(
-      `\\u3010${citation.metadata.extra.cited_message_idx}\\u2020.+?\\u3011`,
-      'g',
-    );
     const replacement = ` ([${citation.metadata.title}](${citation.metadata.url}))`;
-    messageText = messageText.replace(pattern, replacement);
+
+    result = result.slice(0, citation.start_ix) + replacement + result.slice(citation.end_ix);
   }
 
-  return messageText;
+  return result;
 }
 
 /**
@@ -292,4 +349,4 @@ function formatMessageText(messageData) {
   return messageText;
 }
 
-module.exports = { getImporter };
+module.exports = { getImporter, processAssistantMessage };

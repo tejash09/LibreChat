@@ -1,23 +1,50 @@
 import { useState, useRef, useEffect } from 'react';
+import { AutoSizer, List } from 'react-virtualized';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
-import type { MentionOption } from '~/common';
+import type { MentionOption, ConvoGenerator } from '~/common';
+import useSelectMention from '~/hooks/Input/useSelectMention';
 import { useAssistantsMapContext } from '~/Providers';
 import useMentions from '~/hooks/Input/useMentions';
-import { useLocalize, useCombobox } from '~/hooks';
-import { removeAtSymbolIfLast } from '~/utils';
+import { useLocalize, useCombobox, TranslationKeys } from '~/hooks';
+import { removeCharIfLast } from '~/utils';
 import MentionItem from './MentionItem';
+
+const ROW_HEIGHT = 40;
 
 export default function Mention({
   setShowMentionPopover,
+  newConversation,
   textAreaRef,
+  commandChar = '@',
+  placeholder = 'com_ui_mention',
+  includeAssistants = true,
 }: {
   setShowMentionPopover: SetterOrUpdater<boolean>;
+  newConversation: ConvoGenerator;
   textAreaRef: React.MutableRefObject<HTMLTextAreaElement | null>;
+  commandChar?: string;
+  placeholder?: TranslationKeys;
+  includeAssistants?: boolean;
 }) {
   const localize = useLocalize();
-  const assistantMap = useAssistantsMapContext();
-  const { options, modelsConfig, assistants, onSelectMention } = useMentions({ assistantMap });
+  const assistantsMap = useAssistantsMapContext();
+  const {
+    options,
+    presets,
+    modelSpecs,
+    agentsList,
+    modelsConfig,
+    endpointsConfig,
+    assistantListMap,
+  } = useMentions({ assistantMap: assistantsMap || {}, includeAssistants });
+  const { onSelectMention } = useSelectMention({
+    presets,
+    modelSpecs,
+    assistantsMap,
+    endpointsConfig,
+    newConversation,
+  });
 
   const [activeIndex, setActiveIndex] = useState(0);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -38,20 +65,30 @@ export default function Mention({
       setSearchValue('');
       setOpen(false);
       setShowMentionPopover(false);
-      onSelectMention(mention);
+      onSelectMention?.(mention);
 
       if (textAreaRef.current) {
-        removeAtSymbolIfLast(textAreaRef.current);
+        removeCharIfLast(textAreaRef.current, commandChar);
       }
     };
 
-    if (mention.type === 'endpoint' && mention.value === EModelEndpoint.assistants) {
+    if (mention.type === 'endpoint' && mention.value === EModelEndpoint.agents) {
       setSearchValue('');
-      setInputOptions(assistants);
+      setInputOptions(agentsList ?? []);
+      setActiveIndex(0);
+      inputRef.current?.focus();
+    } else if (mention.type === 'endpoint' && mention.value === EModelEndpoint.assistants) {
+      setSearchValue('');
+      setInputOptions(assistantListMap[EModelEndpoint.assistants] ?? []);
+      setActiveIndex(0);
+      inputRef.current?.focus();
+    } else if (mention.type === 'endpoint' && mention.value === EModelEndpoint.azureAssistants) {
+      setSearchValue('');
+      setInputOptions(assistantListMap[EModelEndpoint.azureAssistants] ?? []);
       setActiveIndex(0);
       inputRef.current?.focus();
     } else if (mention.type === 'endpoint') {
-      const models = (modelsConfig?.[mention.value ?? ''] ?? []).map((model) => ({
+      const models = (modelsConfig?.[mention.value || ''] ?? []).map((model) => ({
         value: mention.value,
         label: model,
         type: 'model',
@@ -74,17 +111,61 @@ export default function Mention({
   }, [open, options]);
 
   useEffect(() => {
-    const currentActiveItem = document.getElementById(`mention-item-${activeIndex}`);
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
+
+  const type = commandChar !== '@' ? 'add-convo' : 'mention';
+  useEffect(() => {
+    const currentActiveItem = document.getElementById(`${type}-item-${activeIndex}`);
     currentActiveItem?.scrollIntoView({ behavior: 'instant', block: 'nearest' });
-  }, [activeIndex]);
+  }, [type, activeIndex]);
+
+  const rowRenderer = ({
+    index,
+    key,
+    style,
+  }: {
+    index: number;
+    key: string;
+    style: React.CSSProperties;
+  }) => {
+    const mention = matches[index] as MentionOption;
+    return (
+      <MentionItem
+        type={type}
+        index={index}
+        key={key}
+        style={style}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (timeoutRef.current) {
+            clearTimeout(timeoutRef.current);
+          }
+          timeoutRef.current = null;
+          handleSelect(mention);
+        }}
+        name={mention.label ?? ''}
+        icon={mention.icon}
+        description={mention.description}
+        isActive={index === activeIndex}
+      />
+    );
+  };
 
   return (
-    <div className="absolute bottom-16 z-10 w-full space-y-2">
+    <div className="absolute bottom-28 z-10 w-full space-y-2">
       <div className="popover border-token-border-light rounded-2xl border bg-white p-2 shadow-lg dark:bg-gray-700">
         <input
+          // The user expects focus to transition to the input field when the popover is opened
+          // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           ref={inputRef}
-          placeholder={localize('com_ui_mention')}
+          placeholder={localize(placeholder)}
           className="mb-1 w-full border-0 bg-white p-2 text-sm focus:outline-none dark:bg-gray-700 dark:text-gray-200"
           autoComplete="off"
           value={searchValue}
@@ -122,24 +203,20 @@ export default function Mention({
           }}
         />
         {open && (
-          <div className="max-h-40 overflow-y-auto">
-            {(matches as MentionOption[]).map((mention, index) => (
-              <MentionItem
-                index={index}
-                key={`${mention.value}-${index}`}
-                onClick={() => {
-                  if (timeoutRef.current) {
-                    clearTimeout(timeoutRef.current);
-                  }
-                  timeoutRef.current = null;
-                  handleSelect(mention);
-                }}
-                name={mention.label ?? ''}
-                icon={mention.icon}
-                description={mention.description}
-                isActive={index === activeIndex}
-              />
-            ))}
+          <div className="max-h-40">
+            <AutoSizer disableHeight>
+              {({ width }) => (
+                <List
+                  width={width}
+                  overscanRowCount={5}
+                  rowHeight={ROW_HEIGHT}
+                  rowCount={matches.length}
+                  rowRenderer={rowRenderer}
+                  scrollToIndex={activeIndex}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                />
+              )}
+            </AutoSizer>
           </div>
         )}
       </div>

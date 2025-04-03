@@ -1,14 +1,12 @@
 const OpenAIClient = require('./OpenAIClient');
-const { CallbackManager } = require('langchain/callbacks');
+const { CallbackManager } = require('@langchain/core/callbacks/manager');
 const { BufferMemory, ChatMessageHistory } = require('langchain/memory');
-const { initializeCustomAgent, initializeFunctionsAgent } = require('./agents');
 const { addImages, buildErrorInput, buildPromptPrefix } = require('./output_parsers');
+const { initializeCustomAgent, initializeFunctionsAgent } = require('./agents');
 const { processFileURL } = require('~/server/services/Files/process');
 const { EModelEndpoint } = require('librechat-data-provider');
+const { checkBalance } = require('~/models/balanceMethods');
 const { formatLangChainMessages } = require('./prompts');
-const checkBalance = require('~/models/checkBalance');
-const { SelfReflectionTool } = require('./tools');
-const { isEnabled } = require('~/server/utils');
 const { extractBaseURL } = require('~/utils');
 const { loadTools } = require('./tools/util');
 const { logger } = require('~/config');
@@ -40,7 +38,9 @@ class PluginsClient extends OpenAIClient {
 
   getSaveOptions() {
     return {
+      artifacts: this.options.artifacts,
       chatGptLabel: this.options.chatGptLabel,
+      modelLabel: this.options.modelLabel,
       promptPrefix: this.options.promptPrefix,
       tools: this.options.tools,
       ...this.modelOptions,
@@ -103,7 +103,7 @@ class PluginsClient extends OpenAIClient {
       chatHistory: new ChatMessageHistory(pastMessages),
     });
 
-    this.tools = await loadTools({
+    const { loadedTools } = await loadTools({
       user,
       model,
       tools: this.options.tools,
@@ -117,13 +117,14 @@ class PluginsClient extends OpenAIClient {
         processFileURL,
         message,
       },
+      useSpecs: true,
     });
 
-    if (this.tools.length > 0 && !this.functionsAgent) {
-      this.tools.push(new SelfReflectionTool({ message, isGpt3: false }));
-    } else if (this.tools.length === 0) {
+    if (loadedTools.length === 0) {
       return;
     }
+
+    this.tools = loadedTools;
 
     logger.debug('[PluginsClient] Requested Tools', this.options.tools);
     logger.debug(
@@ -143,16 +144,22 @@ class PluginsClient extends OpenAIClient {
 
     // initialize agent
     const initializer = this.functionsAgent ? initializeFunctionsAgent : initializeCustomAgent;
+
+    let customInstructions = (this.options.promptPrefix ?? '').trim();
+    if (typeof this.options.artifactsPrompt === 'string' && this.options.artifactsPrompt) {
+      customInstructions = `${customInstructions ?? ''}\n${this.options.artifactsPrompt}`.trim();
+    }
+
     this.executor = await initializer({
       model,
       signal,
       pastMessages,
       tools: this.tools,
+      customInstructions,
       verbose: this.options.debug,
       returnIntermediateSteps: true,
       customName: this.options.chatGptLabel,
       currentDateString: this.currentDateString,
-      customInstructions: this.options.promptPrefix,
       callbackManager: CallbackManager.fromHandlers({
         async handleAgentAction(action, runId) {
           handleAction(action, runId, onAgentAction);
@@ -220,6 +227,13 @@ class PluginsClient extends OpenAIClient {
     }
   }
 
+  /**
+   *
+   * @param {TMessage} responseMessage
+   * @param {Partial<TMessage>} saveOptions
+   * @param {string} user
+   * @returns
+   */
   async handleResponseMessage(responseMessage, saveOptions, user) {
     const { output, errorMessage, ...result } = this.result;
     logger.debug('[PluginsClient][handleResponseMessage] Output:', {
@@ -238,22 +252,33 @@ class PluginsClient extends OpenAIClient {
       await this.recordTokenUsage(responseMessage);
     }
 
-    await this.saveMessageToDatabase(responseMessage, saveOptions, user);
+    this.responsePromise = this.saveMessageToDatabase(responseMessage, saveOptions, user);
     delete responseMessage.tokenCount;
     return { ...responseMessage, ...result };
   }
 
   async sendMessage(message, opts = {}) {
+    /** @type {{ filteredTools: string[], includedTools: string[] }} */
+    const { filteredTools = [], includedTools = [] } = this.options.req.app.locals;
+
+    if (includedTools.length > 0) {
+      const tools = this.options.tools.filter((plugin) => includedTools.includes(plugin));
+      this.options.tools = tools;
+    } else {
+      const tools = this.options.tools.filter((plugin) => !filteredTools.includes(plugin));
+      this.options.tools = tools;
+    }
+
     // If a message is edited, no tools can be used.
     const completionMode = this.options.tools.length === 0 || opts.isEdited;
     if (completionMode) {
       this.setOptions(opts);
       return super.sendMessage(message, opts);
     }
+
     logger.debug('[PluginsClient] sendMessage', { userMessageText: message, opts });
     const {
       user,
-      isEdited,
       conversationId,
       responseMessageId,
       saveOptions,
@@ -263,6 +288,14 @@ class PluginsClient extends OpenAIClient {
       onToolStart,
       onToolEnd,
     } = await this.handleStartMethods(message, opts);
+
+    if (opts.progressCallback) {
+      opts.onProgress = opts.progressCallback.call(null, {
+        ...(opts.progressOptions ?? {}),
+        parentMessageId: userMessage.messageId,
+        messageId: responseMessageId,
+      });
+    }
 
     this.currentMessages.push(userMessage);
 
@@ -292,9 +325,18 @@ class PluginsClient extends OpenAIClient {
     if (payload) {
       this.currentMessages = payload;
     }
-    await this.saveMessageToDatabase(userMessage, saveOptions, user);
 
-    if (isEnabled(process.env.CHECK_BALANCE)) {
+    if (!this.skipSaveUserMessage) {
+      this.userMessagePromise = this.saveMessageToDatabase(userMessage, saveOptions, user);
+      if (typeof opts?.getReqData === 'function') {
+        opts.getReqData({
+          userMessagePromise: this.userMessagePromise,
+        });
+      }
+    }
+
+    const balance = this.options.req?.app?.locals?.balance;
+    if (balance?.enabled) {
       await checkBalance({
         req: this.options.req,
         res: this.options.res,
@@ -316,7 +358,6 @@ class PluginsClient extends OpenAIClient {
       conversationId,
       parentMessageId: userMessage.messageId,
       isCreatedByUser: false,
-      isEdited,
       model: this.modelOptions.model,
       sender: this.sender,
       promptTokens,
@@ -405,7 +446,6 @@ class PluginsClient extends OpenAIClient {
 
     const instructionsPayload = {
       role: 'system',
-      name: 'instructions',
       content: promptPrefix,
     };
 

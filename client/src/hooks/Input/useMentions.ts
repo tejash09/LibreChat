@@ -1,19 +1,66 @@
 import { useMemo } from 'react';
+import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
-  useGetModelsQuery,
-  useGetStartupConfig,
+  Permissions,
+  alternateName,
+  EModelEndpoint,
+  PermissionTypes,
+  isAgentsEndpoint,
+  getConfigDefaults,
+  isAssistantsEndpoint,
+} from 'librechat-data-provider';
+import type { TAssistantsMap, TEndpointsConfig } from 'librechat-data-provider';
+import type { MentionOption } from '~/common';
+import {
+  useGetPresetsQuery,
   useGetEndpointsQuery,
-} from 'librechat-data-provider/react-query';
-import { getConfigDefaults, EModelEndpoint, alternateName } from 'librechat-data-provider';
-import type { Assistant } from 'librechat-data-provider';
-import { useGetPresetsQuery, useListAssistantsQuery } from '~/data-provider';
+  useListAgentsQuery,
+  useGetStartupConfig,
+} from '~/data-provider';
+import useAssistantListMap from '~/hooks/Assistants/useAssistantListMap';
 import { mapEndpoints, getPresetTitle } from '~/utils';
 import { EndpointIcon } from '~/components/Endpoints';
-import useSelectMention from './useSelectMention';
+import useHasAccess from '~/hooks/Roles/useHasAccess';
 
 const defaultInterface = getConfigDefaults().interface;
 
-export default function useMentions({ assistantMap }: { assistantMap: Record<string, Assistant> }) {
+const assistantMapFn =
+  ({
+    endpoint,
+    assistantMap,
+    endpointsConfig,
+  }: {
+    endpoint: EModelEndpoint | string;
+    assistantMap: TAssistantsMap;
+    endpointsConfig: TEndpointsConfig;
+  }) =>
+    ({ id, name, description }) => ({
+      type: endpoint,
+      label: name ?? '',
+      value: id,
+      description: description ?? '',
+      icon: EndpointIcon({
+        conversation: { assistant_id: id, endpoint },
+        containerClassName: 'shadow-stroke overflow-hidden rounded-full',
+        endpointsConfig: endpointsConfig,
+        context: 'menu-item',
+        assistantMap,
+        size: 20,
+      }),
+    });
+
+export default function useMentions({
+  assistantMap,
+  includeAssistants,
+}: {
+  assistantMap: TAssistantsMap;
+  includeAssistants: boolean;
+}) {
+  const hasAgentAccess = useHasAccess({
+    permissionType: PermissionTypes.AGENTS,
+    permission: Permissions.USE,
+  });
+
   const { data: presets } = useGetPresetsQuery();
   const { data: modelsConfig } = useGetModelsQuery();
   const { data: startupConfig } = useGetStartupConfig();
@@ -21,40 +68,96 @@ export default function useMentions({ assistantMap }: { assistantMap: Record<str
   const { data: endpoints = [] } = useGetEndpointsQuery({
     select: mapEndpoints,
   });
-  const { data: assistants = [] } = useListAssistantsQuery(undefined, {
-    select: (res) =>
-      res.data
-        .map(({ id, name, description }) => ({
-          type: 'assistant',
-          label: name ?? '',
-          value: id,
-          description: description ?? '',
-          icon: EndpointIcon({
-            conversation: { assistant_id: id, endpoint: EModelEndpoint.assistants },
-            containerClassName: 'shadow-stroke overflow-hidden rounded-full',
-            endpointsConfig: endpointsConfig,
-            context: 'menu-item',
-            assistantMap,
-            size: 20,
-          }),
-        }))
-        .filter(Boolean),
-  });
-  const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
+  const listMap = useAssistantListMap((res) =>
+    res.data.map(({ id, name, description }) => ({
+      id,
+      name,
+      description,
+    })),
+  );
   const interfaceConfig = useMemo(
     () => startupConfig?.interface ?? defaultInterface,
-    [startupConfig],
+    [startupConfig?.interface],
   );
-  const { onSelectMention } = useSelectMention({
-    modelSpecs,
-    endpointsConfig,
-    presets,
-    assistantMap,
+  const { data: agentsList = null } = useListAgentsQuery(undefined, {
+    enabled: hasAgentAccess && interfaceConfig.modelSelect === true,
+    select: (res) => {
+      const { data } = res;
+      return data.map(({ id, name, avatar }) => ({
+        value: id,
+        label: name ?? '',
+        type: EModelEndpoint.agents,
+        icon: EndpointIcon({
+          conversation: {
+            agent_id: id,
+            endpoint: EModelEndpoint.agents,
+            iconURL: avatar?.filepath,
+          },
+          containerClassName: 'shadow-stroke overflow-hidden rounded-full',
+          endpointsConfig: endpointsConfig,
+          context: 'menu-item',
+          size: 20,
+        }),
+      }));
+    },
   });
+  const assistantListMap = useMemo(
+    () => ({
+      [EModelEndpoint.assistants]: listMap[EModelEndpoint.assistants]
+        ?.map(
+          assistantMapFn({
+            endpoint: EModelEndpoint.assistants,
+            assistantMap,
+            endpointsConfig,
+          }),
+        )
+        .filter(Boolean),
+      [EModelEndpoint.azureAssistants]: listMap[EModelEndpoint.azureAssistants]
+        ?.map(
+          assistantMapFn({
+            endpoint: EModelEndpoint.azureAssistants,
+            assistantMap,
+            endpointsConfig,
+          }),
+        )
+        .filter(Boolean),
+    }),
+    [listMap, assistantMap, endpointsConfig],
+  );
 
-  const options = useMemo(() => {
+  const modelSpecs = useMemo(() => startupConfig?.modelSpecs?.list ?? [], [startupConfig]);
+
+  const options: MentionOption[] = useMemo(() => {
+    let validEndpoints = endpoints;
+    if (!includeAssistants) {
+      validEndpoints = endpoints.filter((endpoint) => !isAssistantsEndpoint(endpoint));
+    }
+
+    const modelOptions = validEndpoints.flatMap((endpoint) => {
+      if (isAssistantsEndpoint(endpoint) || isAgentsEndpoint(endpoint)) {
+        return [];
+      }
+
+      if (interfaceConfig.modelSelect !== true) {
+        return [];
+      }
+
+      const models = (modelsConfig?.[endpoint] ?? []).map((model) => ({
+        value: endpoint,
+        label: model,
+        type: 'model' as const,
+        icon: EndpointIcon({
+          conversation: { endpoint, model },
+          endpointsConfig,
+          context: 'menu-item',
+          size: 20,
+        }),
+      }));
+      return models;
+    });
+
     const mentions = [
-      ...(modelSpecs?.length > 0 ? modelSpecs : []).map((modelSpec) => ({
+      ...(modelSpecs.length > 0 ? modelSpecs : []).map((modelSpec) => ({
         value: modelSpec.name,
         label: modelSpec.label,
         description: modelSpec.description,
@@ -67,12 +170,12 @@ export default function useMentions({ assistantMap }: { assistantMap: Record<str
           context: 'menu-item',
           size: 20,
         }),
-        type: 'modelSpec',
+        type: 'modelSpec' as const,
       })),
-      ...(interfaceConfig.endpointsMenu ? endpoints : []).map((endpoint) => ({
+      ...(interfaceConfig.modelSelect === true ? validEndpoints : []).map((endpoint) => ({
         value: endpoint,
-        label: alternateName[endpoint] ?? endpoint ?? '',
-        type: 'endpoint',
+        label: alternateName[endpoint as string] ?? endpoint ?? '',
+        type: 'endpoint' as const,
         icon: EndpointIcon({
           conversation: { endpoint },
           endpointsConfig,
@@ -80,8 +183,21 @@ export default function useMentions({ assistantMap }: { assistantMap: Record<str
           size: 20,
         }),
       })),
-      ...(endpointsConfig?.[EModelEndpoint.assistants] ? assistants : []),
-      ...((interfaceConfig.presets ? presets : [])?.map((preset, index) => ({
+      ...(interfaceConfig.modelSelect === true ? (agentsList ?? []) : []),
+      ...(endpointsConfig?.[EModelEndpoint.assistants] &&
+      includeAssistants &&
+      interfaceConfig.modelSelect === true
+        ? assistantListMap[EModelEndpoint.assistants] || []
+        : []),
+      ...(endpointsConfig?.[EModelEndpoint.azureAssistants] &&
+      includeAssistants &&
+      interfaceConfig.modelSelect === true
+        ? assistantListMap[EModelEndpoint.azureAssistants] || []
+        : []),
+      ...((interfaceConfig.modelSelect === true && interfaceConfig.presets === true
+        ? presets
+        : []
+      )?.map((preset, index) => ({
         value: preset.presetId ?? `preset-${index}`,
         label: preset.title ?? preset.modelLabel ?? preset.chatGptLabel ?? '',
         description: getPresetTitle(preset, true),
@@ -93,8 +209,9 @@ export default function useMentions({ assistantMap }: { assistantMap: Record<str
           assistantMap,
           size: 20,
         }),
-        type: 'preset',
+        type: 'preset' as const,
       })) ?? []),
+      ...modelOptions,
     ];
 
     return mentions;
@@ -102,17 +219,23 @@ export default function useMentions({ assistantMap }: { assistantMap: Record<str
     presets,
     endpoints,
     modelSpecs,
-    assistants,
+    agentsList,
     assistantMap,
+    modelsConfig,
     endpointsConfig,
+    assistantListMap,
+    includeAssistants,
     interfaceConfig.presets,
     interfaceConfig.endpointsMenu,
   ]);
 
   return {
     options,
-    assistants,
+    presets,
+    modelSpecs,
+    agentsList,
     modelsConfig,
-    onSelectMention,
+    endpointsConfig,
+    assistantListMap,
   };
 }

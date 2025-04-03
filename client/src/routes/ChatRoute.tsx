@@ -1,55 +1,63 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { defaultOrderQuery } from 'librechat-data-provider';
-import {
-  useGetModelsQuery,
-  useGetStartupConfig,
-  useGetEndpointsQuery,
-} from 'librechat-data-provider/react-query';
+import { Constants, EModelEndpoint } from 'librechat-data-provider';
+import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import type { TPreset } from 'librechat-data-provider';
-import { useGetConvoIdQuery, useListAssistantsQuery } from '~/data-provider';
+import {
+  useGetConvoIdQuery,
+  useHealthCheck,
+  useGetEndpointsQuery,
+  useGetStartupConfig,
+} from '~/data-provider';
+import { useNewConvo, useAppStartup, useAssistantListMap } from '~/hooks';
 import { getDefaultModelSpec, getModelSpecIconURL } from '~/utils';
-import { useNewConvo, useAppStartup } from '~/hooks';
+import { ToolCallsMapProvider } from '~/Providers';
 import ChatView from '~/components/Chat/ChatView';
 import useAuthRedirect from './useAuthRedirect';
+import temporaryStore from '~/store/temporary';
 import { Spinner } from '~/components/svg';
+import { useRecoilCallback } from 'recoil';
 import store from '~/store';
 
 export default function ChatRoute() {
+  useHealthCheck();
   const { data: startupConfig } = useGetStartupConfig();
   const { isAuthenticated, user } = useAuthRedirect();
+  const setIsTemporary = useRecoilCallback(
+    ({ set }) =>
+      (value: boolean) => {
+        set(temporaryStore.isTemporary, value);
+      },
+    [],
+  );
   useAppStartup({ startupConfig, user });
 
   const index = 0;
-  const { conversationId } = useParams();
+  const { conversationId = '' } = useParams();
 
-  const { conversation } = store.useCreateConversationAtom(index);
+  const { hasSetConversation, conversation } = store.useCreateConversationAtom(index);
   const { newConversation } = useNewConvo();
-  const hasSetConversation = useRef(false);
 
   const modelsQuery = useGetModelsQuery({
     enabled: isAuthenticated,
     refetchOnMount: 'always',
   });
-  const initialConvoQuery = useGetConvoIdQuery(conversationId ?? '', {
-    enabled: isAuthenticated && conversationId !== 'new',
+  const initialConvoQuery = useGetConvoIdQuery(conversationId, {
+    enabled: isAuthenticated && conversationId !== Constants.NEW_CONVO,
   });
   const endpointsQuery = useGetEndpointsQuery({ enabled: isAuthenticated });
-  const { data: assistants = null } = useListAssistantsQuery(defaultOrderQuery, {
-    select: (res) =>
-      res.data.map(({ id, name, metadata, model }) => ({ id, name, metadata, model })),
-  });
+  const assistantListMap = useAssistantListMap();
 
   useEffect(() => {
-    if (
-      startupConfig &&
-      conversationId === 'new' &&
-      endpointsQuery.data &&
-      modelsQuery.data &&
-      !modelsQuery.data?.initial &&
-      !hasSetConversation.current
-    ) {
-      const spec = getDefaultModelSpec(startupConfig.modelSpecs?.list);
+    const shouldSetConvo =
+      (startupConfig && !hasSetConversation.current && !modelsQuery.data?.initial) ?? false;
+    /* Early exit if startupConfig is not loaded and conversation is already set and only initial models have loaded */
+    if (!shouldSetConvo) {
+      return;
+    }
+
+    if (conversationId === Constants.NEW_CONVO && endpointsQuery.data && modelsQuery.data) {
+      const spec = getDefaultModelSpec(startupConfig);
 
       newConversation({
         modelsData: modelsQuery.data,
@@ -66,14 +74,7 @@ export default function ChatRoute() {
       });
 
       hasSetConversation.current = true;
-    } else if (
-      startupConfig &&
-      initialConvoQuery.data &&
-      endpointsQuery.data &&
-      modelsQuery.data &&
-      !modelsQuery.data?.initial &&
-      !hasSetConversation.current
-    ) {
+    } else if (initialConvoQuery.data && endpointsQuery.data && modelsQuery.data) {
       newConversation({
         template: initialConvoQuery.data,
         /* this is necessary to load all existing settings */
@@ -83,13 +84,11 @@ export default function ChatRoute() {
       });
       hasSetConversation.current = true;
     } else if (
-      startupConfig &&
-      !hasSetConversation.current &&
-      !modelsQuery.data?.initial &&
-      conversationId === 'new' &&
-      assistants
+      conversationId === Constants.NEW_CONVO &&
+      assistantListMap[EModelEndpoint.assistants] &&
+      assistantListMap[EModelEndpoint.azureAssistants]
     ) {
-      const spec = getDefaultModelSpec(startupConfig.modelSpecs?.list);
+      const spec = getDefaultModelSpec(startupConfig);
       newConversation({
         modelsData: modelsQuery.data,
         template: conversation ? conversation : undefined,
@@ -105,10 +104,8 @@ export default function ChatRoute() {
       });
       hasSetConversation.current = true;
     } else if (
-      startupConfig &&
-      !hasSetConversation.current &&
-      !modelsQuery.data?.initial &&
-      assistants
+      assistantListMap[EModelEndpoint.assistants] &&
+      assistantListMap[EModelEndpoint.azureAssistants]
     ) {
       newConversation({
         template: initialConvoQuery.data,
@@ -119,11 +116,20 @@ export default function ChatRoute() {
       hasSetConversation.current = true;
     }
     /* Creates infinite render if all dependencies included due to newConversation invocations exceeding call stack before hasSetConversation.current becomes truthy */
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startupConfig, initialConvoQuery.data, endpointsQuery.data, modelsQuery.data, assistants]);
+  }, [
+    startupConfig,
+    initialConvoQuery.data,
+    endpointsQuery.data,
+    modelsQuery.data,
+    assistantListMap,
+  ]);
 
   if (endpointsQuery.isLoading || modelsQuery.isLoading) {
-    return <Spinner className="m-auto text-black dark:text-white" />;
+    return (
+      <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
+        <Spinner className="text-text-primary" />
+      </div>
+    );
   }
 
   if (!isAuthenticated) {
@@ -131,7 +137,7 @@ export default function ChatRoute() {
   }
 
   // if not a conversation
-  if (conversation?.conversationId === 'search') {
+  if (conversation?.conversationId === Constants.SEARCH) {
     return null;
   }
   // if conversationId not match
@@ -143,5 +149,17 @@ export default function ChatRoute() {
     return null;
   }
 
-  return <ChatView index={index} />;
+  const isTemporaryChat = conversation && conversation.expiredAt ? true : false;
+
+  if (conversationId !== Constants.NEW_CONVO && !isTemporaryChat) {
+    setIsTemporary(false);
+  } else if (isTemporaryChat) {
+    setIsTemporary(isTemporaryChat);
+  }
+
+  return (
+    <ToolCallsMapProvider conversationId={conversation.conversationId ?? ''}>
+      <ChatView index={index} />
+    </ToolCallsMapProvider>
+  );
 }
